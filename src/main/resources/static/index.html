@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Consulta Solr</title>
+</head>
+<body>
+    <h1>Buscador Solr</h1>
+    <input type="text" id="query" placeholder="Ingrese su consulta...">
+    <button onclick="search()">Buscar</button>
+    <pre id="resultados"></pre>
+
+    <script>
+        async function search() {
+            const query = document.getElementById('query').value;
+            const response = await fetch(`/api/query?q=${encodeURIComponent(query)}`);
+            const data = await response.json();
+            document.getElementById('resultados').textContent = JSON.stringify(data, null, 2);
+        }
+    </script>
+</body>
+</html>
