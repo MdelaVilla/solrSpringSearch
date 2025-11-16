@@ -3,20 +3,147 @@
 <head>
     <meta charset="UTF-8">
     <title>Consulta Solr</title>
+    <style>
+        /* Minimal styles for the results table */
+        #resultados { font-family: Arial, sans-serif; margin-top: 1rem; }
+        table.results { border-collapse: collapse; width: 100%; }
+        table.results th, table.results td { border: 1px solid #ddd; padding: 8px; }
+        table.results th { background: #f2f2f2; text-align: left; }
+        .no-results { color: #777; }
+        .field-array { color: #333; }
+        .field-empty { color: #999; font-style: italic; }
+    </style>
 </head>
 <body>
     <h1>Buscador Solr</h1>
     <input type="text" id="query" placeholder="Ingrese su consulta...">
     <button onclick="search()">Buscar</button>
-    <pre id="resultados"></pre>
+    <div id="resultados" aria-live="polite"></div>
 
     <script>
+        // Configuración por campo del DTO: ajustar según su DTO
+        // Cada clave corresponde al nombre del campo en los documentos devueltos.
+        // Opciones disponibles:
+        //  - label: texto de cabecera
+        //  - order: número para ordenar columnas (menor primero)
+        //  - format: función(value) que devuelve string para mostrar
+        //  - visible: boolean (por defecto true)
+        const fieldConfig = {
+            id: { label: 'ID', order: 1 },
+            title: { label: 'Título', order: 2 },
+            description: { label: 'Descripción', order: 3, format: v => (v && v.length>200) ? v.substring(0,200)+"..." : v },
+            score: { label: 'Score', order: 4, format: v => (v==null? '': Number(v).toFixed(2)) },
+            date: { label: 'Fecha', order: 5, format: v => v ? new Date(v).toLocaleString() : '' }
+        };
+
+        // Helper: extrae la lista de documentos de la respuesta (solr usa response.docs)
+        function extractDocs(data) {
+            if (!data) return [];
+            if (Array.isArray(data)) return data; // ya es un array
+            if (data.response && Array.isArray(data.response.docs)) return data.response.docs;
+            // por si viene encapsulado en otro campo común
+            if (data.docs && Array.isArray(data.docs)) return data.docs;
+            // fallback: intentar buscar la primera propiedad que sea array de objetos
+            for (const k of Object.keys(data)) {
+                if (Array.isArray(data[k])) return data[k];
+            }
+            return [];
+        }
+
+        function formatValue(val, cfg) {
+            if (val == null || (Array.isArray(val) && val.length === 0) || val === '') {
+                return '<span class="field-empty">—</span>';
+            }
+            if (cfg && typeof cfg.format === 'function') {
+                try { return escapeHtml(cfg.format(val)); } catch (e) { /* si falla, mostrar fallback */ }
+            }
+            // arrays: unir por comas
+            if (Array.isArray(val)) return '<span class="field-array">' + escapeHtml(val.join(', ')) + '</span>';
+            // objetos: mostrar como JSON breve
+            if (typeof val === 'object') return '<pre>' + escapeHtml(JSON.stringify(val, null, 2)) + '</pre>';
+            // primitivo
+            return escapeHtml(String(val));
+        }
+
+        // escapar HTML simple para evitar inyección accidental
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, function (c) {
+                return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c];
+            });
+        }
+
+        function buildColumnsFromDocs(docs) {
+            const keys = new Set();
+            docs.forEach(d => Object.keys(d || {}).forEach(k => keys.add(k)));
+            // Construir columna por cada key, aplicando configuración y orden
+            const cols = Array.from(keys).map(k => ({
+                key: k,
+                label: (fieldConfig[k] && fieldConfig[k].label) || k,
+                order: (fieldConfig[k] && (typeof fieldConfig[k].order === 'number')) ? fieldConfig[k].order : 9999,
+                visible: (fieldConfig[k] && fieldConfig[k].visible === false) ? false : true,
+                cfg: fieldConfig[k] || null
+            })).filter(c => c.visible)
+              .sort((a,b) => a.order - b.order || a.key.localeCompare(b.key));
+            return cols;
+        }
+
+        function renderResults(data) {
+            const container = document.getElementById('resultados');
+            container.innerHTML = ''; // limpiar
+            const docs = extractDocs(data);
+            if (!docs || docs.length === 0) {
+                container.innerHTML = '<div class="no-results">No se encontraron resultados.</div>';
+                return;
+            }
+            const cols = buildColumnsFromDocs(docs);
+            const table = document.createElement('table');
+            table.className = 'results';
+            const thead = document.createElement('thead');
+            const trHead = document.createElement('tr');
+            cols.forEach(c => {
+                const th = document.createElement('th');
+                th.textContent = c.label;
+                trHead.appendChild(th);
+            });
+            thead.appendChild(trHead);
+            table.appendChild(thead);
+            const tbody = document.createElement('tbody');
+            docs.forEach(doc => {
+                const tr = document.createElement('tr');
+                cols.forEach(c => {
+                    const td = document.createElement('td');
+                    const raw = doc[c.key];
+                    td.innerHTML = formatValue(raw, c.cfg);
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+            table.appendChild(tbody);
+            container.appendChild(table);
+            // Añadir resumen
+            const summary = document.createElement('div');
+            summary.style.marginTop = '0.5rem';
+            summary.textContent = `Mostrando ${docs.length} documento(s)`;
+            container.appendChild(summary);
+        }
+
         async function search() {
             const query = document.getElementById('query').value;
-            const response = await fetch(`/api/query?q=${encodeURIComponent(query)}`);
-            const data = await response.json();
-            document.getElementById('resultados').textContent = JSON.stringify(data, null, 2);
+            const container = document.getElementById('resultados');
+            container.innerHTML = 'Buscando...';
+            try {
+                const response = await fetch(`/api/query?q=${encodeURIComponent(query)}`);
+                if (!response.ok) throw new Error('Error en la petición: ' + response.status);
+                const data = await response.json();
+                renderResults(data);
+            } catch (err) {
+                container.innerHTML = '<div class="no-results">Error: ' + escapeHtml(err.message) + '</div>';
+                console.error(err);
+            }
         }
+
+        // Exportar config para acceso desde consola si el desarrollador quiere modificarla en caliente
+        window.__solrFieldConfig = fieldConfig;
     </script>
 </body>
 </html>
